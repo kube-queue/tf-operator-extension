@@ -9,7 +9,7 @@ build: build-extension
 
 .PHONY: build-extension
 build-extension: fixcodec
-	$(COMMONENVVAR) $(BUILDENVVAR) go build -ldflags '-w' -o bin/tf-operator-extension cmd/main.go
+	$(COMMONENVVAR) $(BUILDENVVAR) go build -mod vendor -ldflags '-w' -o bin/tf-operator-extension cmd/main.go
 
 .PHONY: fixcodec
 	hack/fix-codec-factory.sh
