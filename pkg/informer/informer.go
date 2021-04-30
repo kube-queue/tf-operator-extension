@@ -6,6 +6,11 @@ import (
 	tfcontroller "github.com/kubeflow/tf-operator/pkg/controller.v1/tensorflow"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"time"
+)
+
+var (
+	retryPeriod   = 3 * time.Second
 )
 
 type Informer struct {
@@ -19,7 +24,7 @@ func MakeInformer(cfg *rest.Config, addr string, namespace string) (*Informer, e
 		return nil, err
 	}
 
-	in := tfcontroller.NewUnstructuredTFJobInformer(cfg, namespace)
+	in := tfcontroller.NewUnstructuredTFJobInformer(cfg, namespace, retryPeriod)
 	in.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    client.AddFunc,
 		DeleteFunc: client.DeleteFunc,
