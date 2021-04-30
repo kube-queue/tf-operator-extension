@@ -1,6 +1,6 @@
 module github.com/kube-queue/tf-operator-extension
 
-go 1.13
+go 1.15
 
 require (
 	github.com/kube-queue/kube-queue v0.0.0-20210430032824-f8afe32d0f30
@@ -12,9 +12,7 @@ require (
 	k8s.io/api v0.20.5
 	k8s.io/apimachinery v0.16.10-beta.0
 	k8s.io/client-go v11.0.0+incompatible
-	k8s.io/code-generator v0.16.9
 	k8s.io/klog v1.0.0
-	k8s.io/kube-openapi v0.0.0-20200410163147-594e756bea31
 	k8s.io/sample-controller v0.0.0-00010101000000-000000000000
 	k8s.io/utils v0.0.0-20210305010621-2afb4311ab10 // indirect
 )
