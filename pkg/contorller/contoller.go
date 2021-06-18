@@ -42,6 +42,7 @@ func (t *TFExtensionController) AddQueueUnit(obj interface{}) {
 	klog.Infof("unit add %v", unit.Name)
 
 	if unit.Status.Phase == v1alpha1.Dequeued {
+
 		t.DeleteQueueAnotation(unit)
 	}
 }
@@ -70,7 +71,6 @@ func (t *TFExtensionController) DeleteTFJob(obj interface{}) {
 	//opts := metav1.ListOptions{
 	//	LabelSelector: selector,
 	//}
-
 	qulist, err := t.QueueClient.SchedulingV1alpha1().QueueUnits(job.Namespace).List(context.TODO(), metav1.ListOptions{})
 	klog.Infof("qulist %v", qulist)
 	if err != nil {
