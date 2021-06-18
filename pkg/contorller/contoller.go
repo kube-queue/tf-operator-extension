@@ -3,9 +3,8 @@ package contorller
 import (
 	"context"
 
-	queuev1alpha2 "github.com/kube-queue/kube-queue/pkg/apis/queue/v1alpha2"
-	queueversioned "github.com/kube-queue/kube-queue/pkg/client/clientset/versioned"
-	"github.com/kube-queue/kube-queue/pkg/queue"
+	v1alpha1 "github.com/kube-queue/api/pkg/apis/scheduling/v1alpha1"
+	queueversioned "github.com/kube-queue/api/pkg/client/clientset/versioned"
 	commonv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/common/v1"
 	tfjobv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
 	tfjobversioned "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/clientset/versioned"
@@ -39,10 +38,11 @@ func (t *TFExtensionController) Run(stopCh <-chan struct{}) error {
 }
 
 func (t *TFExtensionController) AddQueueUnit(obj interface{}) {
-	unit := obj.(*queuev1alpha2.QueueUnit)
+	unit := obj.(*v1alpha1.QueueUnit)
 	klog.Infof("unit add %v", unit.Name)
 
-	if unit.Status.Phase == queuev1alpha2.Dequeued {
+	if unit.Status.Phase == v1alpha1.Dequeued {
+
 		t.DeleteQueueAnotation(unit)
 	}
 }
@@ -51,11 +51,11 @@ func (t *TFExtensionController) DeleteQueueUnit(obj interface{}) {
 }
 
 func (t *TFExtensionController) UpdateQueueUnit(oldObj, newObj interface{}) {
-	oldQu := oldObj.(*queuev1alpha2.QueueUnit)
-	newQu := newObj.(*queuev1alpha2.QueueUnit)
+	oldQu := oldObj.(*v1alpha1.QueueUnit)
+	newQu := newObj.(*v1alpha1.QueueUnit)
 
 	// TODO add op to workqueue and asynchronous operation
-	if oldQu.Status.Phase != queuev1alpha2.Dequeued && newQu.Status.Phase == queuev1alpha2.Dequeued {
+	if oldQu.Status.Phase != v1alpha1.Dequeued && newQu.Status.Phase == v1alpha1.Dequeued {
 		t.DeleteQueueAnotation(newQu)
 	}
 }
@@ -71,8 +71,7 @@ func (t *TFExtensionController) DeleteTFJob(obj interface{}) {
 	//opts := metav1.ListOptions{
 	//	LabelSelector: selector,
 	//}
-
-	qulist, err := t.QueueClient.QueueV1alpha2().QueueUnits(job.Namespace).List(context.TODO(), metav1.ListOptions{})
+	qulist, err := t.QueueClient.SchedulingV1alpha1().QueueUnits(job.Namespace).List(context.TODO(), metav1.ListOptions{})
 	klog.Infof("qulist %v", qulist)
 	if err != nil {
 		klog.Errorf("DeleteTFJob error: get qulist failed %v/%v %v", job.Namespace, job.Name, err.Error())
@@ -82,7 +81,7 @@ func (t *TFExtensionController) DeleteTFJob(obj interface{}) {
 		//klog.Infof("%v, %v, %v, %v, %v，%v, %v", qu.Spec.ConsumerRef.Kind, job.Kind, qu.Spec.ConsumerRef.APIVersion, job.APIVersion, qu.Spec.ConsumerRef.Name, job.Name)
 
 		if qu.Spec.ConsumerRef.Name == job.Name {
-			err = t.QueueClient.QueueV1alpha2().QueueUnits(job.Namespace).Delete(context.TODO(), qu.Name, metav1.DeleteOptions{})
+			err = t.QueueClient.SchedulingV1alpha1().QueueUnits(job.Namespace).Delete(context.TODO(), qu.Name, metav1.DeleteOptions{})
 			if err != nil {
 				klog.Errorf("DeleteTFJob error: delete qu failed %v/%v %v", qu.Namespace, qu.Name, err)
 			}
@@ -104,7 +103,7 @@ func (t *TFExtensionController) UpdateTFJob(oldObj, newObj interface{}) {
 	}
 }
 
-func (t *TFExtensionController) DeleteQueueAnotation(qu *queuev1alpha2.QueueUnit) {
+func (t *TFExtensionController) DeleteQueueAnotation(qu *v1alpha1.QueueUnit) {
 	namespace := qu.Spec.ConsumerRef.Namespace
 	tfjobName := qu.Spec.ConsumerRef.Name
 	tfjob, err := t.TfjobClient.KubeflowV1().TFJobs(qu.Spec.ConsumerRef.Namespace).Get(context.TODO(), tfjobName, metav1.GetOptions{})
@@ -115,7 +114,7 @@ func (t *TFExtensionController) DeleteQueueAnotation(qu *queuev1alpha2.QueueUnit
 
 	var annotation = map[string]string{}
 	for k, v := range tfjob.Annotations {
-		if k != queue.AnnotationQueue {
+		if k != "kube-queue" {
 			annotation[k] = v
 		}
 	}

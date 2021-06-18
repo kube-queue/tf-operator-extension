@@ -3,7 +3,7 @@ module github.com/kube-queue/tf-operator-extension
 go 1.13
 
 require (
-	github.com/kube-queue/kube-queue v0.0.0
+	github.com/kube-queue/api v0.0.0-20210617052442-dff18a6e98f0
 	github.com/kubeflow/common v0.3.3-0.20210227095238-97658773cce1
 	github.com/kubeflow/tf-operator v1.1.0
 	github.com/sirupsen/logrus v1.6.0
@@ -17,7 +17,6 @@ require (
 )
 
 replace (
-	github.com/kube-queue/kube-queue => /Users/wangqingcan/Documents/github/ack-kubernetes/src/github.com/kube-queue/kube-queue
 	k8s.io/api => k8s.io/api v0.20.0
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.20.0
 	k8s.io/apimachinery => k8s.io/apimachinery v0.20.0

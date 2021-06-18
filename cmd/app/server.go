@@ -5,9 +5,9 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/sample-controller/pkg/signals"
 
-	"github.com/kube-queue/kube-queue/pkg/apis/queue/v1alpha2"
-	queueversioned "github.com/kube-queue/kube-queue/pkg/client/clientset/versioned"
-	queueinformers "github.com/kube-queue/kube-queue/pkg/client/informers/externalversions"
+	"github.com/kube-queue/api/pkg/apis/scheduling/v1alpha1"
+	queueversioned "github.com/kube-queue/api/pkg/client/clientset/versioned"
+	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions"
 	"github.com/kube-queue/tf-operator-extension/cmd/app/options"
 	"github.com/kube-queue/tf-operator-extension/pkg/contorller"
 	"github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
@@ -32,13 +32,13 @@ func Run(opt *options.ServerOption) error {
 	}
 
 	queueInformerFactory := queueinformers.NewSharedInformerFactory(queueClient, 0)
-	queueInformer := queueInformerFactory.Queue().V1alpha2().QueueUnits().Informer()
+	queueInformer := queueInformerFactory.Scheduling().V1alpha1().QueueUnits().Informer()
 	klog.Info("2")
 	queueInformer.AddEventHandler(
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
 				switch qu := obj.(type) {
-				case *v1alpha2.QueueUnit:
+				case *v1alpha1.QueueUnit:
 					if qu.Spec.ConsumerRef.Kind == "TFJob" && qu.Spec.ConsumerRef.APIVersion == "kubeflow.org/v1" {
 						return true
 					}
