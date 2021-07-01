@@ -7,4 +7,4 @@ RUN make
 FROM alpine:3.12
 COPY --from=build /go/src/github.com/kube-queue/tf-operator-extension/bin/tf-operator-extension /usr/bin/tf-operator-extension
 RUN chmod +x /usr/bin/tf-operator-extension
-ENTRYPOINT ["tf-operator-extension"]
+ENTRYPOINT ["/usr/bin/tf-operator-extension"]
