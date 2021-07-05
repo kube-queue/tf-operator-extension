@@ -29,7 +29,7 @@ const (
 	//
 	// 1-10 retry times: 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s,
 	// 11-20 retry times: 5.1s, 10.2s, 20.4s, 41s, 82s, 164s, 328s, 656s(11min), 1312s(21min), 2624s(43min)
-	MaxRetries = 20
+	MaxRetries = 15
 	// Suspend is a flag annotation for tfjob to use the queueunit crd
 	Suspend = "scheduling.x-k8s.io/suspend"
 )
@@ -121,7 +121,7 @@ func (tc *TFExtensionController) syncHandler(key string) error {
 	queueUnit, err := tc.queueInformer.Lister().QueueUnits(namespace).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			klog.Errorf("QueueUnit %s has been deleted: %s ...", queueUnit.Name)
+			klog.Errorf("QueueUnit %v/%v has been deleted from cache", queueUnit.Namespace, queueUnit.Name)
 			// If can't get queueunit, return nil, handleErr function will forget key from workqueue
 			return nil
 		}
@@ -163,10 +163,11 @@ func (tc *TFExtensionController) handleErr(err error, key string) {
 		tc.workqueue.Forget(key)
 		return
 	}
-
-	if tc.workqueue.NumRequeues(key) < MaxRetries {
+    // numRequeues defined how many times the item was requeued
+	numRequeues := tc.workqueue.NumRequeues(key)
+	if numRequeues < MaxRetries {
 		tc.workqueue.AddRateLimited(key)
-		klog.Infof("We will requeue %v %d times,because:%v, has retried %d times", key, MaxRetries, err, tc.workqueue.NumRequeues(key)+1)
+		klog.Infof("We will requeue %v %d times,because:%v, has retried %d times", key, MaxRetries, err, numRequeues + 1)
 		return
 	}
 
@@ -247,6 +248,7 @@ func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(job *v1.TFJob
 	}
 }
 
+// TODO: How to deal with the failure to delete the queueunit instance
 func (tc *TFExtensionController) deleteQueueUnitInstance(namespace, name string) error {
 	err := tc.queueClient.SchedulingV1alpha1().QueueUnits(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 	if err != nil {
