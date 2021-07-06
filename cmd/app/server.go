@@ -1,6 +1,7 @@
 package app
 
 import (
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/sample-controller/pkg/signals"
@@ -10,20 +11,28 @@ import (
 	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions"
 	"github.com/kube-queue/tf-operator-extension/cmd/app/options"
 	"github.com/kube-queue/tf-operator-extension/pkg/contorller"
-	"github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
+	v1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
 	tfjobversioned "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/clientset/versioned"
 	tfjobinformers "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/informers/externalversions"
 	"k8s.io/klog/v2"
 )
 
+const (
+	ConsumerRefKind       = v1.Kind
+	ConsumerRefAPIVersion = v1.GroupName + "/" + v1.GroupVersion
+)
+
 // Run runs the server.
 func Run(opt *options.ServerOption) error {
-	klog.Info("1")
-	tfExtensionController := contorller.NewTFExtensionController()
+	var restConfig *rest.Config
+	var err error
+	// Set up signals so we handle the first shutdown signal gracefully.
+	stopCh := signals.SetupSignalHandler()
 
-	restConfig, err := clientcmd.BuildConfigFromFlags("", opt.KubeConfig)
-	if err != nil {
-		return err
+	if restConfig, err = rest.InClusterConfig(); err != nil {
+		if restConfig, err = clientcmd.BuildConfigFromFlags("", opt.KubeConfig); err != nil {
+			return err
+		}
 	}
 
 	queueClient, err := queueversioned.NewForConfig(restConfig)
@@ -31,15 +40,29 @@ func Run(opt *options.ServerOption) error {
 		return err
 	}
 
+	tfJobClient, err := tfjobversioned.NewForConfig(restConfig)
+	if err != nil {
+		return err
+	}
+
 	queueInformerFactory := queueinformers.NewSharedInformerFactory(queueClient, 0)
 	queueInformer := queueInformerFactory.Scheduling().V1alpha1().QueueUnits().Informer()
-	klog.Info("2")
+	tfJobInformerFactory := tfjobinformers.NewSharedInformerFactory(tfJobClient, 0)
+	tfJobInformer := tfJobInformerFactory.Kubeflow().V1().TFJobs().Informer()
+
+	tfExtensionController := contorller.NewTFExtensionController(queueInformerFactory.Scheduling().V1alpha1().QueueUnits(),
+		queueClient,
+		tfJobInformerFactory.Kubeflow().V1().TFJobs(),
+		tfJobClient)
+
 	queueInformer.AddEventHandler(
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
 				switch qu := obj.(type) {
 				case *v1alpha1.QueueUnit:
-					if qu.Spec.ConsumerRef.Kind == "TFJob" && qu.Spec.ConsumerRef.APIVersion == "kubeflow.org/v1" {
+					if qu.Spec.ConsumerRef != nil &&
+						qu.Spec.ConsumerRef.Kind == ConsumerRefKind &&
+						qu.Spec.ConsumerRef.APIVersion == ConsumerRefAPIVersion {
 						return true
 					}
 					return false
@@ -50,19 +73,12 @@ func Run(opt *options.ServerOption) error {
 			Handler: cache.ResourceEventHandlerFuncs{
 				AddFunc:    tfExtensionController.AddQueueUnit,
 				UpdateFunc: tfExtensionController.UpdateQueueUnit,
-				//DeleteFunc: tfExtensionController.DeleteQueueUnit,
+				DeleteFunc: tfExtensionController.DeleteQueueUnit,
 			},
 		},
 	)
 
-	tfjobClient, err := tfjobversioned.NewForConfig(restConfig)
-	if err != nil {
-		return err
-	}
-	klog.Info("3")
-	tfjobInformerFactory := tfjobinformers.NewSharedInformerFactory(tfjobClient, 0)
-	tfjobInformer := tfjobInformerFactory.Kubeflow().V1().TFJobs().Informer()
-	tfjobInformer.AddEventHandler(
+	tfJobInformer.AddEventHandler(
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
 				switch obj.(type) {
@@ -73,23 +89,22 @@ func Run(opt *options.ServerOption) error {
 				}
 			},
 			Handler: cache.ResourceEventHandlerFuncs{
-				//AddFunc:    tfExtensionController.AddTFJob,
+				AddFunc:    tfExtensionController.AddTFJob,
 				UpdateFunc: tfExtensionController.UpdateTFJob,
 				DeleteFunc: tfExtensionController.DeleteTFJob,
 			},
 		},
 	)
 
-	tfExtensionController.QueueInformer = queueInformer
-	tfExtensionController.TfjobInformer = tfjobInformer
-	tfExtensionController.QueueClient = queueClient
-	tfExtensionController.TfjobClient = tfjobClient
-	klog.Info("4")
-	// Set up signals so we handle the first shutdown signal gracefully.
-	stopCh := signals.SetupSignalHandler()
-	err = tfExtensionController.Run(stopCh)
+	// start queueunit informer
+	go queueInformerFactory.Start(stopCh)
+	// start pytorchjob informer
+	go tfJobInformerFactory.Start(stopCh)
+
+	err = tfExtensionController.Run(2, stopCh)
 	if err != nil {
-		klog.Error(err.Error())
+		klog.Fatalf("Error running pytorchExtensionController", err.Error())
+		return err
 	}
 
 	return nil
