@@ -11,15 +11,10 @@ import (
 	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions"
 	"github.com/kube-queue/tf-operator-extension/cmd/app/options"
 	"github.com/kube-queue/tf-operator-extension/pkg/contorller"
-	v1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
+	tfjobv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
 	tfjobversioned "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/clientset/versioned"
 	tfjobinformers "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/informers/externalversions"
 	"k8s.io/klog/v2"
-)
-
-const (
-	ConsumerRefKind       = v1.Kind
-	ConsumerRefAPIVersion = v1.GroupName + "/" + v1.GroupVersion
 )
 
 // Run runs the server.
@@ -61,8 +56,8 @@ func Run(opt *options.ServerOption) error {
 				switch qu := obj.(type) {
 				case *v1alpha1.QueueUnit:
 					if qu.Spec.ConsumerRef != nil &&
-						qu.Spec.ConsumerRef.Kind == ConsumerRefKind &&
-						qu.Spec.ConsumerRef.APIVersion == ConsumerRefAPIVersion {
+						qu.Spec.ConsumerRef.Kind == contorller.ConsumerRefKind &&
+						qu.Spec.ConsumerRef.APIVersion == contorller.ConsumerRefAPIVersion {
 						return true
 					}
 					return false
@@ -82,7 +77,7 @@ func Run(opt *options.ServerOption) error {
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
 				switch obj.(type) {
-				case *v1.TFJob:
+				case *tfjobv1.TFJob:
 					return true
 				default:
 					return false

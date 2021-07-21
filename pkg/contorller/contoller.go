@@ -7,6 +7,7 @@ import (
 
 	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions/scheduling/v1alpha1"
 	tfjobinformers "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/informers/externalversions/tensorflow/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -15,7 +16,7 @@ import (
 	"github.com/kube-queue/api/pkg/apis/scheduling/v1alpha1"
 	queueversioned "github.com/kube-queue/api/pkg/client/clientset/versioned"
 	commonv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/common/v1"
-	v1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
+	tfjobv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
 	tfjobversioned "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/clientset/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
@@ -32,6 +33,14 @@ const (
 	MaxRetries = 15
 	// Suspend is a flag annotation for tfjob to use the queueunit crd
 	Suspend = "scheduling.x-k8s.io/suspend"
+)
+
+const (
+	ConsumerRefKind       = tfjobv1.Kind
+	ConsumerRefAPIVersion = tfjobv1.GroupName + "/" + tfjobv1.GroupVersion
+	// QuNameSuffix is the suffix of the queue unit name when create a new one.
+	// In this way, different types of jobs with the same name will create different queue unit name.
+	QuNameSuffix = "-tf-qu"
 )
 
 type TFExtensionController struct {
@@ -163,11 +172,11 @@ func (tc *TFExtensionController) handleErr(err error, key string) {
 		tc.workqueue.Forget(key)
 		return
 	}
-    // numRequeues defined how many times the item was requeued
+	// numRequeues defined how many times the item was requeued
 	numRequeues := tc.workqueue.NumRequeues(key)
 	if numRequeues < MaxRetries {
 		tc.workqueue.AddRateLimited(key)
-		klog.Infof("We will requeue %v %d times,because:%v, has retried %d times", key, MaxRetries, err, numRequeues + 1)
+		klog.Infof("We will requeue %v %d times,because:%v, has retried %d times", key, MaxRetries, err, numRequeues+1)
 		return
 	}
 
@@ -209,12 +218,107 @@ func (tc *TFExtensionController) DeleteQueueUnit(obj interface{}) {
 }
 
 func (tc *TFExtensionController) AddTFJob(obj interface{}) {
-	tfJob := obj.(*v1.TFJob)
+	tfJob := obj.(*tfjobv1.TFJob)
 	klog.Infof("Add tfjob:%v/%v", tfJob.Namespace, tfJob.Name)
+	err := tc.createQueueUnitInstance(tfJob)
+	if err != nil {
+		klog.Errorf("Can't create queueunit for tfjob %v/%v,err is:%v", tfJob.Namespace, tfJob.Name, err)
+	}
+}
+
+func (tc *TFExtensionController) createQueueUnitInstance(tfJob *tfjobv1.TFJob) error {
+	// 1. try to get annotation scheduling.x-k8s.io/suspend
+	_, ok := tfJob.Annotations[Suspend]
+	if !ok {
+		klog.Infof("tfjob %v/%v is not scheduled by kube-queue", tfJob.Namespace, tfJob.Name)
+		return nil
+	}
+
+	// 2. annotation has been found and try to get queueunit from cache
+	qu, err := tc.queueInformer.Lister().QueueUnits(tfJob.Namespace).Get(tfJob.Name + QuNameSuffix)
+	if err == nil && qu.Spec.ConsumerRef.Kind == ConsumerRefKind {
+		klog.Infof("It already has a queueunit %v/%v for tfJob %v/%v",
+			qu.Namespace, qu.Name, tfJob.Namespace, tfJob.Name)
+	} else if err != nil && errors.IsNotFound(err) {
+		// 2.1 there is no specified queueunit in k8s
+		klog.Infof("Creating queueunit for tfJob %v/%v", tfJob.Namespace, tfJob.Name)
+		// 2.2 generate a new queueunit
+		quMeta := tc.generateQueueUnitInstance(tfJob)
+		// 2.3 create the queueunit
+		qu, err = tc.queueClient.SchedulingV1alpha1().QueueUnits(quMeta.Namespace).Create(context.TODO(), quMeta, metav1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+		klog.Infof("Created queueunit %v/%v successfully", qu.Namespace, qu.Name)
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (tc *TFExtensionController) generateQueueUnitInstance(tfJob *tfjobv1.TFJob) *v1alpha1.QueueUnit {
+	// 1. build ObjectReference from corresponding Job CR
+	objectReference := tc.generateObjectReference(tfJob)
+	// 2. get priorityClassName from tfjob master role
+	var priorityClassName string
+	for role := range tfJob.Spec.TFReplicaSpecs {
+		if role == "Master" {
+			priorityClassName = tfJob.Spec.TFReplicaSpecs[role].Template.Spec.PriorityClassName
+		}
+	}
+	// 3. calculate the total resources of this tensorflow instance
+	resources := tc.calculateTotalResources(tfJob)
+	// 4. build QueueUnit
+	return &v1alpha1.QueueUnit{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tfJob.Name + QuNameSuffix,
+			Namespace: tfJob.Namespace,
+		},
+		Spec: v1alpha1.QueueUnitSpec{
+			ConsumerRef:       objectReference,
+			PriorityClassName: priorityClassName,
+			Resource:          resources,
+		},
+		Status: v1alpha1.QueueUnitStatus{
+			Phase:   v1alpha1.Enqueued,
+			Message: "the queueunit is enqueued after created",
+		},
+	}
+}
+
+func (tc *TFExtensionController) generateObjectReference(tfJob *tfjobv1.TFJob) *corev1.ObjectReference {
+	return &corev1.ObjectReference{
+		APIVersion: ConsumerRefAPIVersion,
+		Kind:       ConsumerRefKind,
+		Namespace:  tfJob.Namespace,
+		Name:       tfJob.Name,
+	}
+}
+
+func (tc *TFExtensionController) calculateTotalResources(tfJob *tfjobv1.TFJob) corev1.ResourceList {
+	resource := corev1.ResourceList{}
+	for _, spec := range tfJob.Spec.TFReplicaSpecs {
+		replicas := int(*spec.Replicas)
+		for _, c := range spec.Template.Spec.Containers {
+			if c.Resources.Requests != nil {
+				for resourceType, resourceQuantity := range c.Resources.Requests {
+					for i := 0; i < replicas-1; i++ {
+						resourceQuantity.Add(resourceQuantity)
+					}
+					oldQuantity, ok := resource[resourceType]
+					if ok {
+						resourceQuantity.Add(oldQuantity)
+					}
+					resource[resourceType] = resourceQuantity
+				}
+			}
+		}
+	}
+	return resource
 }
 
 func (tc *TFExtensionController) UpdateTFJob(_, newObj interface{}) {
-	newJob := newObj.(*v1.TFJob)
+	newJob := newObj.(*tfjobv1.TFJob)
 	conditionsLen := len(newJob.Status.Conditions)
 	if conditionsLen > 0 {
 		lastCondition := newJob.Status.Conditions[conditionsLen-1]
@@ -226,11 +330,11 @@ func (tc *TFExtensionController) UpdateTFJob(_, newObj interface{}) {
 }
 
 func (tc *TFExtensionController) DeleteTFJob(obj interface{}) {
-	job := obj.(*v1.TFJob)
+	job := obj.(*tfjobv1.TFJob)
 	tc.deleteQueueUnitAfterJobTerminated(job)
 }
 
-func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(job *v1.TFJob) {
+func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(job *tfjobv1.TFJob) {
 	qulist, err := tc.queueClient.SchedulingV1alpha1().QueueUnits(job.Namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		klog.Errorf("DeleteTFJob error: get qulist failed %v/%v %v", job.Namespace, job.Name, err.Error())
@@ -238,7 +342,7 @@ func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(job *v1.TFJob
 	}
 
 	for _, qu := range qulist.Items {
-		if qu.Spec.ConsumerRef.Name == job.Name {
+		if qu.Spec.ConsumerRef.Name == job.Name && qu.Spec.ConsumerRef.Kind == ConsumerRefKind {
 			err = tc.deleteQueueUnitInstance(job.Namespace, qu.Name)
 			if err != nil {
 				klog.Errorf("Delete queueunit error: delete qu failed %v/%v %v", qu.Namespace, qu.Name, err)
