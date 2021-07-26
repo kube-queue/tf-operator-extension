@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/kubernetes"
+
 	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions/scheduling/v1alpha1"
 	tfjobinformers "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/informers/externalversions/tensorflow/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -44,6 +47,7 @@ const (
 )
 
 type TFExtensionController struct {
+	k8sClient     *kubernetes.Clientset
 	queueInformer queueinformers.QueueUnitInformer
 	queueClient   *queueversioned.Clientset
 	tfjobInformer tfjobinformers.TFJobInformer
@@ -51,11 +55,14 @@ type TFExtensionController struct {
 	workqueue     workqueue.RateLimitingInterface
 }
 
-func NewTFExtensionController(queueInformer queueinformers.QueueUnitInformer,
+func NewTFExtensionController(
+	k8sClient *kubernetes.Clientset,
+	queueInformer queueinformers.QueueUnitInformer,
 	queueClient *queueversioned.Clientset,
 	tfJobInformer tfjobinformers.TFJobInformer,
 	tfJobClinet *tfjobversioned.Clientset) *TFExtensionController {
 	return &TFExtensionController{
+		k8sClient:     k8sClient,
 		queueInformer: queueInformer,
 		queueClient:   queueClient,
 		tfjobInformer: tfJobInformer,
@@ -236,36 +243,62 @@ func (tc *TFExtensionController) createQueueUnitInstance(tfJob *tfjobv1.TFJob) e
 
 	// 2. annotation has been found and try to get queueunit from cache
 	qu, err := tc.queueInformer.Lister().QueueUnits(tfJob.Namespace).Get(tfJob.Name + QuNameSuffix)
-	if err == nil && qu.Spec.ConsumerRef.Kind == ConsumerRefKind {
-		klog.Infof("It already has a queueunit %v/%v for tfJob %v/%v",
-			qu.Namespace, qu.Name, tfJob.Namespace, tfJob.Name)
-	} else if err != nil && errors.IsNotFound(err) {
-		// 2.1 there is no specified queueunit in k8s
-		klog.Infof("Creating queueunit for tfJob %v/%v", tfJob.Namespace, tfJob.Name)
-		// 2.2 generate a new queueunit
-		quMeta := tc.generateQueueUnitInstance(tfJob)
-		// 2.3 create the queueunit
-		qu, err = tc.queueClient.SchedulingV1alpha1().QueueUnits(quMeta.Namespace).Create(context.TODO(), quMeta, metav1.CreateOptions{})
-		if err != nil {
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// 2.1 there is no specified queueunit in k8s
+			klog.Infof("Creating queueunit for tfJob %v/%v", tfJob.Namespace, tfJob.Name)
+			// 2.2 generate a new queueunit
+			quMeta := tc.generateQueueUnitInstance(tfJob)
+			// 2.3 create the queueunit
+			qu, err = tc.queueClient.SchedulingV1alpha1().QueueUnits(quMeta.Namespace).Create(context.TODO(), quMeta, metav1.CreateOptions{})
+			if err != nil {
+				return err
+			}
+			klog.Infof("Created queueunit %v/%v successfully", qu.Namespace, qu.Name)
+			return nil
+		} else {
 			return err
 		}
-		klog.Infof("Created queueunit %v/%v successfully", qu.Namespace, qu.Name)
-	} else if err != nil {
-		return err
 	}
+
+	if qu.Spec.ConsumerRef.Kind == ConsumerRefKind {
+		klog.Infof("It already has a queueunit %v/%v for tfJob %v/%v",
+			qu.Namespace, qu.Name, tfJob.Namespace, tfJob.Name)
+	} else {
+		klog.Warningf("There is an exception queueunit:%v/%v for tfjob in k8s, please check it", qu.Namespace, qu.Name)
+	}
+
 	return nil
 }
 
 func (tc *TFExtensionController) generateQueueUnitInstance(tfJob *tfjobv1.TFJob) *v1alpha1.QueueUnit {
 	// 1. build ObjectReference from corresponding Job CR
 	objectReference := tc.generateObjectReference(tfJob)
-	// 2. get priorityClassName from tfjob master role
+	// 2. get priorityClassName and priority from one of tfjob roles
 	var priorityClassName string
+	var priority *int32
 	for role := range tfJob.Spec.TFReplicaSpecs {
-		if role == "Master" {
-			priorityClassName = tfJob.Spec.TFReplicaSpecs[role].Template.Spec.PriorityClassName
+		priorityClassName = tfJob.Spec.TFReplicaSpecs[role].Template.Spec.PriorityClassName
+		priority = tfJob.Spec.TFReplicaSpecs[role].Template.Spec.Priority
+		// By default, we think that the PriorityClassName and priority of all roles are the same,
+		// so just take the value of one role and break
+		break
+	}
+
+	// If there is a related priorityClassInstance in K8s, we use priorityClass's value instead of tfJob.Spec.TFReplicaSpecs[role].Template.Spec.Priority
+	if priorityClassName != "" {
+		priorityClassInstance, err := tc.k8sClient.SchedulingV1().PriorityClasses().Get(context.TODO(), priorityClassName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				klog.Infof("Can not find priority class name %v in k8s, we will ignore it", priorityClassName)
+			} else {
+				klog.Errorf("Can not get PriorityClass %v from k8s for tfjob:%v/%v, err:%v", priorityClassName, tfJob.Namespace, tfJob.Name, err)
+			}
+		} else {
+			priority = &priorityClassInstance.Value
 		}
 	}
+
 	// 3. calculate the total resources of this tensorflow instance
 	resources := tc.calculateTotalResources(tfJob)
 	// 4. build QueueUnit
@@ -276,6 +309,7 @@ func (tc *TFExtensionController) generateQueueUnitInstance(tfJob *tfjobv1.TFJob)
 		},
 		Spec: v1alpha1.QueueUnitSpec{
 			ConsumerRef:       objectReference,
+			Priority:          priority,
 			PriorityClassName: priorityClassName,
 			Resource:          resources,
 		},
@@ -296,25 +330,35 @@ func (tc *TFExtensionController) generateObjectReference(tfJob *tfjobv1.TFJob) *
 }
 
 func (tc *TFExtensionController) calculateTotalResources(tfJob *tfjobv1.TFJob) corev1.ResourceList {
-	resource := corev1.ResourceList{}
-	for _, spec := range tfJob.Spec.TFReplicaSpecs {
-		replicas := int(*spec.Replicas)
-		for _, c := range spec.Template.Spec.Containers {
-			if c.Resources.Requests != nil {
-				for resourceType, resourceQuantity := range c.Resources.Requests {
-					for i := 0; i < replicas-1; i++ {
-						resourceQuantity.Add(resourceQuantity)
-					}
-					oldQuantity, ok := resource[resourceType]
-					if ok {
-						resourceQuantity.Add(oldQuantity)
-					}
-					resource[resourceType] = resourceQuantity
+	totalResources := corev1.ResourceList{}
+	// calculate the total resource request
+	for _, replicaSpec := range tfJob.Spec.TFReplicaSpecs {
+		// get different roles and calculate the sum of the pods belongs to the same role
+		count := int(*replicaSpec.Replicas)
+		containers := replicaSpec.Template.Spec.Containers
+		for _, container := range containers {
+			// calculate the resource request of pods first (the pod count is decided by replicas's number)
+			resources := container.Resources.Requests
+			for resourceType := range resources {
+				quantity := resources[resourceType]
+				// scale the quantity by count
+				replicaQuantity := resource.Quantity{}
+				for i := 1; i <= count; i++ {
+					replicaQuantity.Add(quantity)
+				}
+				// check if the resourceType is in totalResources
+				if totalQuantity, ok := totalResources[resourceType]; !ok {
+					// not in: set this replicaQuantity
+					totalResources[resourceType] = replicaQuantity
+				} else {
+					// in: append this replicaQuantity and update
+					totalQuantity.Add(replicaQuantity)
+					totalResources[resourceType] = totalQuantity
 				}
 			}
 		}
 	}
-	return resource
+	return totalResources
 }
 
 func (tc *TFExtensionController) UpdateTFJob(_, newObj interface{}) {

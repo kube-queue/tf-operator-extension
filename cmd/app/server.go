@@ -1,6 +1,7 @@
 package app
 
 import (
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -30,6 +31,11 @@ func Run(opt *options.ServerOption) error {
 		}
 	}
 
+	k8sClientSet, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return err
+	}
+
 	queueClient, err := queueversioned.NewForConfig(restConfig)
 	if err != nil {
 		return err
@@ -45,7 +51,9 @@ func Run(opt *options.ServerOption) error {
 	tfJobInformerFactory := tfjobinformers.NewSharedInformerFactory(tfJobClient, 0)
 	tfJobInformer := tfJobInformerFactory.Kubeflow().V1().TFJobs().Informer()
 
-	tfExtensionController := contorller.NewTFExtensionController(queueInformerFactory.Scheduling().V1alpha1().QueueUnits(),
+	tfExtensionController := contorller.NewTFExtensionController(
+		k8sClientSet,
+		queueInformerFactory.Scheduling().V1alpha1().QueueUnits(),
 		queueClient,
 		tfJobInformerFactory.Kubeflow().V1().TFJobs(),
 		tfJobClient)
