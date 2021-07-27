@@ -101,12 +101,12 @@ func Run(opt *options.ServerOption) error {
 
 	// start queueunit informer
 	go queueInformerFactory.Start(stopCh)
-	// start pytorchjob informer
+	// start tfjob informer
 	go tfJobInformerFactory.Start(stopCh)
 
 	err = tfExtensionController.Run(2, stopCh)
 	if err != nil {
-		klog.Fatalf("Error running pytorchExtensionController", err.Error())
+		klog.Fatalf("Error running tfExtensionController", err.Error())
 		return err
 	}
 

@@ -149,7 +149,7 @@ func (tc *TFExtensionController) syncHandler(key string) error {
 
 	if queueUnit.Status.Phase == v1alpha1.Dequeued {
 		klog.Infof("QueueUnit %v/%v has dequeued", queueUnit.Namespace, queueUnit.Name)
-		err = tc.deleteQueueAnotationInTFJob(queueUnit)
+		err = tc.deleteQueueAnnotationInTFJob(queueUnit)
 		if errors.IsNotFound(err) {
 			// If can't find tfjob for queueunit, return err, handleErr function will requeue key MaxRetries times
 			return err
@@ -406,7 +406,7 @@ func (tc *TFExtensionController) deleteQueueUnitInstance(namespace, name string)
 	return nil
 }
 
-func (tc *TFExtensionController) deleteQueueAnotationInTFJob(qu *v1alpha1.QueueUnit) error {
+func (tc *TFExtensionController) deleteQueueAnnotationInTFJob(qu *v1alpha1.QueueUnit) error {
 	namespace := qu.Spec.ConsumerRef.Namespace
 	tfJobName := qu.Spec.ConsumerRef.Name
 	tfJob, err := tc.tfjobClient.KubeflowV1().TFJobs(qu.Spec.ConsumerRef.Namespace).Get(context.TODO(), tfJobName, metav1.GetOptions{})
