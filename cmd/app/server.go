@@ -1,6 +1,7 @@
 package app
 
 import (
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -11,15 +12,10 @@ import (
 	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions"
 	"github.com/kube-queue/tf-operator-extension/cmd/app/options"
 	"github.com/kube-queue/tf-operator-extension/pkg/contorller"
-	v1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
+	tfjobv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
 	tfjobversioned "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/clientset/versioned"
 	tfjobinformers "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/informers/externalversions"
 	"k8s.io/klog/v2"
-)
-
-const (
-	ConsumerRefKind       = v1.Kind
-	ConsumerRefAPIVersion = v1.GroupName + "/" + v1.GroupVersion
 )
 
 // Run runs the server.
@@ -33,6 +29,11 @@ func Run(opt *options.ServerOption) error {
 		if restConfig, err = clientcmd.BuildConfigFromFlags("", opt.KubeConfig); err != nil {
 			return err
 		}
+	}
+
+	k8sClientSet, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return err
 	}
 
 	queueClient, err := queueversioned.NewForConfig(restConfig)
@@ -50,7 +51,9 @@ func Run(opt *options.ServerOption) error {
 	tfJobInformerFactory := tfjobinformers.NewSharedInformerFactory(tfJobClient, 0)
 	tfJobInformer := tfJobInformerFactory.Kubeflow().V1().TFJobs().Informer()
 
-	tfExtensionController := contorller.NewTFExtensionController(queueInformerFactory.Scheduling().V1alpha1().QueueUnits(),
+	tfExtensionController := contorller.NewTFExtensionController(
+		k8sClientSet,
+		queueInformerFactory.Scheduling().V1alpha1().QueueUnits(),
 		queueClient,
 		tfJobInformerFactory.Kubeflow().V1().TFJobs(),
 		tfJobClient)
@@ -61,8 +64,8 @@ func Run(opt *options.ServerOption) error {
 				switch qu := obj.(type) {
 				case *v1alpha1.QueueUnit:
 					if qu.Spec.ConsumerRef != nil &&
-						qu.Spec.ConsumerRef.Kind == ConsumerRefKind &&
-						qu.Spec.ConsumerRef.APIVersion == ConsumerRefAPIVersion {
+						qu.Spec.ConsumerRef.Kind == contorller.ConsumerRefKind &&
+						qu.Spec.ConsumerRef.APIVersion == contorller.ConsumerRefAPIVersion {
 						return true
 					}
 					return false
@@ -82,7 +85,7 @@ func Run(opt *options.ServerOption) error {
 		cache.FilteringResourceEventHandler{
 			FilterFunc: func(obj interface{}) bool {
 				switch obj.(type) {
-				case *v1.TFJob:
+				case *tfjobv1.TFJob:
 					return true
 				default:
 					return false
@@ -98,12 +101,12 @@ func Run(opt *options.ServerOption) error {
 
 	// start queueunit informer
 	go queueInformerFactory.Start(stopCh)
-	// start pytorchjob informer
+	// start tfjob informer
 	go tfJobInformerFactory.Start(stopCh)
 
 	err = tfExtensionController.Run(2, stopCh)
 	if err != nil {
-		klog.Fatalf("Error running pytorchExtensionController", err.Error())
+		klog.Fatalf("Error running tfExtensionController", err.Error())
 		return err
 	}
 
