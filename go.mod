@@ -10,7 +10,7 @@ require (
 	k8s.io/client-go v0.21.1
 	k8s.io/code-generator v0.21.1
 	k8s.io/klog/v2 v2.8.0
-	k8s.io/kube-openapi v0.0.0-20210527164424-3c818078ee3d
+	k8s.io/kube-openapi v0.0.0-20200410145947-61e04a5be9a6
 	k8s.io/sample-controller v0.21.1
 )
 
