@@ -36,6 +36,7 @@ const (
 	MaxRetries = 15
 	// Suspend is a flag annotation for tfjob to use the queueunit crd
 	Suspend = "scheduling.x-k8s.io/suspend"
+	Queuing = "Queuing"
 )
 
 const (
@@ -230,6 +231,28 @@ func (tc *TFExtensionController) AddTFJob(obj interface{}) {
 	err := tc.createQueueUnitInstance(tfJob)
 	if err != nil {
 		klog.Errorf("Can't create queueunit for tfjob %v/%v,err is:%v", tfJob.Namespace, tfJob.Name, err)
+	}
+
+	tfJob, err = tc.tfjobClient.KubeflowV1().TFJobs(tfJob.Namespace).Get(context.TODO(), tfJob.Name, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			klog.Warningf("Can not find related tfjob:%v in namespace:%v", tfJob.Name, tfJob.Namespace)
+		}
+		klog.Errorf("Get tfjob failed %v/%v %v", tfJob.Namespace, tfJob.Name, err.Error())
+		return
+	}
+
+	if tfJob.Status.Conditions == nil {
+		tfJob.Status.Conditions = make([]commonv1.JobCondition, 0)
+		tfJob.Status.Conditions = append(tfJob.Status.Conditions, commonv1.JobCondition{
+			Type:           Queuing,
+			LastUpdateTime: metav1.Now(),
+		})
+		_, err = tc.tfjobClient.KubeflowV1().TFJobs(tfJob.Namespace).UpdateStatus(context.TODO(), tfJob, metav1.UpdateOptions{})
+		if err != nil {
+			klog.Errorf("update tfjob failed Queuing %v/%v %v", tfJob.Namespace, tfJob.Name, err.Error())
+		}
+		klog.Infof("update tfjob %v/%v status Queuing successfully", tfJob.Namespace, tfJob.Name)
 	}
 }
 
