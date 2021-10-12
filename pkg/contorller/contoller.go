@@ -233,15 +233,6 @@ func (tc *TFExtensionController) AddTFJob(obj interface{}) {
 		klog.Errorf("Can't create queueunit for tfjob %v/%v,err is:%v", tfJob.Namespace, tfJob.Name, err)
 	}
 
-	tfJob, err = tc.tfjobClient.KubeflowV1().TFJobs(tfJob.Namespace).Get(context.TODO(), tfJob.Name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			klog.Warningf("Can not find related tfjob:%v in namespace:%v", tfJob.Name, tfJob.Namespace)
-		}
-		klog.Errorf("Get tfjob failed %v/%v %v", tfJob.Namespace, tfJob.Name, err.Error())
-		return
-	}
-
 	if tfJob.Status.Conditions == nil {
 		tfJob.Status.Conditions = make([]commonv1.JobCondition, 0)
 		tfJob.Status.Conditions = append(tfJob.Status.Conditions, commonv1.JobCondition{
