@@ -137,7 +137,7 @@ func (tc *TFExtensionController) syncHandler(key string) error {
 	queueUnit, err := tc.queueInformer.Lister().QueueUnits(namespace).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			klog.Errorf("QueueUnit %v/%v has been deleted from cache", queueUnit.Namespace, queueUnit.Name)
+			klog.Errorf("failed to find qu by:%v/%v, maybe qu has been deleted", namespace, name)
 			// If can't get queueunit, return nil, handleErr function will forget key from workqueue
 			return nil
 		}
@@ -226,7 +226,7 @@ func (tc *TFExtensionController) DeleteQueueUnit(obj interface{}) {
 
 func (tc *TFExtensionController) AddTFJob(obj interface{}) {
 	tfJob := obj.(*tfjobv1.TFJob)
-	klog.Infof("Add tfjob:%v/%v", tfJob.Namespace, tfJob.Name)
+	klog.Infof("Get add tfjob %v/%v event", tfJob.Namespace, tfJob.Name)
 	err := tc.createQueueUnitInstance(tfJob)
 	if err != nil {
 		klog.Errorf("Can't create queueunit for tfjob %v/%v,err is:%v", tfJob.Namespace, tfJob.Name, err)
@@ -362,37 +362,39 @@ func (tc *TFExtensionController) calculateTotalResources(tfJob *tfjobv1.TFJob) c
 }
 
 func (tc *TFExtensionController) UpdateTFJob(_, newObj interface{}) {
-	newJob := newObj.(*tfjobv1.TFJob)
-	conditionsLen := len(newJob.Status.Conditions)
+	newTfJob := newObj.(*tfjobv1.TFJob)
+	conditionsLen := len(newTfJob.Status.Conditions)
 	if conditionsLen > 0 {
-		lastCondition := newJob.Status.Conditions[conditionsLen-1]
+		lastCondition := newTfJob.Status.Conditions[conditionsLen-1]
 		if lastCondition.Type == commonv1.JobFailed || lastCondition.Type == commonv1.JobSucceeded {
-			klog.Infof("job %v/%v finished, current lastCondition.Type: [%v]", newJob.Namespace, newJob.Name, lastCondition.Type)
-			tc.deleteQueueUnitAfterJobTerminated(newJob)
+			klog.Infof("job %v/%v finished, current lastCondition.Type: [%v]", newTfJob.Namespace, newTfJob.Name, lastCondition.Type)
+			tc.deleteQueueUnitAfterJobTerminated(newTfJob)
 		}
 	}
 }
 
 func (tc *TFExtensionController) DeleteTFJob(obj interface{}) {
-	job := obj.(*tfjobv1.TFJob)
-	tc.deleteQueueUnitAfterJobTerminated(job)
+	tfJob := obj.(*tfjobv1.TFJob)
+	klog.Infof("Get delete tfjob %v/%v event", tfJob.Namespace, tfJob.Name)
+	tc.deleteQueueUnitAfterJobTerminated(tfJob)
 }
 
-func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(job *tfjobv1.TFJob) {
-	qulist, err := tc.queueClient.SchedulingV1alpha1().QueueUnits(job.Namespace).List(context.TODO(), metav1.ListOptions{})
+func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(tfJob *tfjobv1.TFJob) {
+	// Get queueunit from cache
+	qu, err := tc.queueInformer.Lister().QueueUnits(tfJob.Namespace).Get(tfJob.Name + QuNameSuffix)
 	if err != nil {
-		klog.Errorf("DeleteTFJob error: get qulist failed %v/%v %v", job.Namespace, job.Name, err.Error())
-		return
-	}
-
-	for _, qu := range qulist.Items {
-		if qu.Spec.ConsumerRef.Name == job.Name && qu.Spec.ConsumerRef.Kind == ConsumerRefKind {
-			err = tc.deleteQueueUnitInstance(job.Namespace, qu.Name)
-			if err != nil {
-				klog.Errorf("Delete queueunit error: delete qu failed %v/%v %v", qu.Namespace, qu.Name, err)
-			}
-			klog.Infof("Delete queueunit %s because related tfjob %v/%v terminated", qu.Name, job.Namespace, job.Name)
+		if errors.IsNotFound(err) {
+			klog.Errorf("failed to get related queueunit by tfjob:%v/%v when delete queueunit, " +
+				"maybe qu has been deleted", tfJob.Namespace, tfJob.Name)
+			return
 		}
+	}
+	if qu.Spec.ConsumerRef.Name == tfJob.Name && qu.Spec.ConsumerRef.Kind == ConsumerRefKind {
+		err = tc.deleteQueueUnitInstance(qu.Namespace, qu.Name)
+		if err != nil {
+			klog.Errorf("Delete queueunit error: delete qu failed %v/%v %v", qu.Namespace, qu.Name, err)
+		}
+		klog.Infof("Delete queueunit %s because related tfjob %v/%v terminated", qu.Name, tfJob.Namespace, tfJob.Name)
 	}
 }
 
