@@ -237,6 +237,7 @@ func (tc *TFExtensionController) AddTFJob(obj interface{}) {
 		tfJob.Status.Conditions = make([]commonv1.JobCondition, 0)
 		tfJob.Status.Conditions = append(tfJob.Status.Conditions, commonv1.JobCondition{
 			Type:           Queuing,
+			Status:         "True",
 			LastUpdateTime: metav1.Now(),
 		})
 		_, err = tc.tfjobClient.KubeflowV1().TFJobs(tfJob.Namespace).UpdateStatus(context.TODO(), tfJob, metav1.UpdateOptions{})
@@ -398,7 +399,7 @@ func (tc *TFExtensionController) deleteQueueUnitAfterJobTerminated(tfJob *tfjobv
 	qu, err := tc.queueInformer.Lister().QueueUnits(tfJob.Namespace).Get(tfJob.Name + QuNameSuffix)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			klog.Errorf("failed to get related queueunit by tfjob:%v/%v when delete queueunit, " +
+			klog.Errorf("failed to get related queueunit by tfjob:%v/%v when delete queueunit, "+
 				"maybe qu has been deleted", tfJob.Namespace, tfJob.Name)
 			return
 		}
