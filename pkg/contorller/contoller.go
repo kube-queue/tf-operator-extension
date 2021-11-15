@@ -3,6 +3,7 @@ package contorller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -34,17 +35,17 @@ const (
 	// 1-10 retry times: 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s,
 	// 11-20 retry times: 5.1s, 10.2s, 20.4s, 41s, 82s, 164s, 328s, 656s(11min), 1312s(21min), 2624s(43min)
 	MaxRetries = 15
+	// RetryInterval is the interval time when update tfjob failed
+	RetryInterval = 200 * time.Millisecond
 	// Suspend is a flag annotation for tfjob to use the queueunit crd
 	Suspend = "scheduling.x-k8s.io/suspend"
 	Queuing = "Queuing"
-)
-
-const (
 	ConsumerRefKind       = tfjobv1.Kind
 	ConsumerRefAPIVersion = tfjobv1.GroupName + "/" + tfjobv1.GroupVersion
 	// QuNameSuffix is the suffix of the queue unit name when create a new one.
 	// In this way, different types of jobs with the same name will create different queue unit name.
 	QuNameSuffix = "-tf-qu"
+	OptimisticLockErrorMsg = "the object has been modified; please apply your changes to the latest version and try again"
 )
 
 type TFExtensionController struct {
@@ -423,19 +424,25 @@ func (tc *TFExtensionController) deleteQueueUnitInstance(namespace, name string)
 	return nil
 }
 
+func (tc TFExtensionController) getTFJob(namespace, name string) (*tfjobv1.TFJob, error)  {
+	tfJob, err := tc.tfjobInformer.Lister().TFJobs(namespace).Get(name)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			klog.Warningf("Can not find related tfjob:%v in namespace:%v", name, namespace)
+		}
+		return nil, err
+	}
+	return tfJob, nil
+}
+
 func (tc *TFExtensionController) deleteQueueAnnotationInTFJob(qu *v1alpha1.QueueUnit) error {
 	namespace := qu.Spec.ConsumerRef.Namespace
 	tfJobName := qu.Spec.ConsumerRef.Name
-	tfJob, err := tc.tfjobClient.KubeflowV1().TFJobs(qu.Spec.ConsumerRef.Namespace).Get(context.TODO(), tfJobName, metav1.GetOptions{})
+	tfJob, err := tc.getTFJob(namespace, tfJobName)
 	if err != nil {
-		if errors.IsNotFound(err) {
-			klog.Warningf("Can not find related tfjob:%v for queueunit:%v in namespace:%v", tfJobName, qu.Name, namespace)
-			return err
-		}
 		klog.Errorf("Get tfjob failed %v/%v %v", namespace, tfJobName, err.Error())
 		return err
 	}
-
 	var annotation = map[string]string{}
 	for k, v := range tfJob.Annotations {
 		if k != Suspend {
@@ -443,14 +450,37 @@ func (tc *TFExtensionController) deleteQueueAnnotationInTFJob(qu *v1alpha1.Queue
 		}
 	}
 	tfJob.SetAnnotations(annotation)
-
 	// TODO change to patch
 	_, err = tc.tfjobClient.KubeflowV1().TFJobs(namespace).Update(context.TODO(), tfJob, metav1.UpdateOptions{})
-	if err != nil {
-		klog.Errorf("UpdateQueueUnit error: update tfjob failed %v/%v %v", namespace, tfJobName, err.Error())
-		return err
+	// retry when update tfjob fails due to OptimisticLockErrorMsg
+	for retry:=0; err != nil; retry++ {
+		if !strings.Contains(err.Error(), OptimisticLockErrorMsg) {
+			klog.Errorf("Update annotations for tfjob %v/%v failed,%v", namespace, tfJobName, err.Error())
+			return err
+		} else {
+			time.Sleep(RetryInterval)
+			tfJob, err := tc.getTFJob(namespace, tfJobName)
+			if err != nil {
+				klog.Errorf("Get tfjob %v/%v failed when retrying, %v", namespace, tfJobName, err.Error())
+				return err
+			}
+			tfJob.SetAnnotations(annotation)
+			_, err = tc.tfjobClient.KubeflowV1().TFJobs(namespace).Update(context.TODO(), tfJob, metav1.UpdateOptions{})
+			if err !=nil && strings.Contains(err.Error(), OptimisticLockErrorMsg) {
+				klog.Warningf("Update annotations for tfjob %v/%v failed because of optimisticLock ,retried %d times",
+					namespace, tfJobName, retry + 1)
+			}
+			if err !=nil && !strings.Contains(err.Error(), OptimisticLockErrorMsg) {
+				klog.Errorf("Update annotations for tfjob %v/%v failed,%v", namespace, tfJobName, err.Error())
+				return err
+			}
+			if retry > MaxRetries {
+				klog.Errorf("update tfjob %v/%v error after retried: %v", namespace, tfJobName, err.Error())
+				return err
+			}
+		}
 	}
-	klog.Infof("Update annotations for tfjob %v/%v", tfJob.Namespace, tfJob.Name)
 
+	klog.Infof("Update annotations for tfjob %v/%v successfully", namespace, tfJobName)
 	return nil
 }
