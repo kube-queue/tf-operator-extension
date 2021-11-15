@@ -28,23 +28,24 @@ import (
 )
 
 const (
-	// MaxRetries is the number of times a queue item will be retried before it is dropped out of the queue.
+	// MaxQueueRetries is the number of times a queue item will be retried before it is dropped out of the queue.
 	// With the current rate-limiter in use (5ms*2^(maxRetries-1)) the following numbers represent the times
 	// a queue item is going to be requeued:
 	//
 	// 1-10 retry times: 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s,
 	// 11-20 retry times: 5.1s, 10.2s, 20.4s, 41s, 82s, 164s, 328s, 656s(11min), 1312s(21min), 2624s(43min)
-	MaxRetries = 15
+	MaxQueueRetries = 15
 	// RetryInterval is the interval time when update tfjob failed
-	RetryInterval = 200 * time.Millisecond
+	RetryInterval    = 200 * time.Millisecond
+	MaxUpdateRetries = 5
 	// Suspend is a flag annotation for tfjob to use the queueunit crd
-	Suspend = "scheduling.x-k8s.io/suspend"
-	Queuing = "Queuing"
+	Suspend               = "scheduling.x-k8s.io/suspend"
+	Queuing               = "Queuing"
 	ConsumerRefKind       = tfjobv1.Kind
 	ConsumerRefAPIVersion = tfjobv1.GroupName + "/" + tfjobv1.GroupVersion
 	// QuNameSuffix is the suffix of the queue unit name when create a new one.
 	// In this way, different types of jobs with the same name will create different queue unit name.
-	QuNameSuffix = "-tf-qu"
+	QuNameSuffix           = "-tf-qu"
 	OptimisticLockErrorMsg = "the object has been modified; please apply your changes to the latest version and try again"
 )
 
@@ -183,9 +184,9 @@ func (tc *TFExtensionController) handleErr(err error, key string) {
 	}
 	// numRequeues defined how many times the item was requeued
 	numRequeues := tc.workqueue.NumRequeues(key)
-	if numRequeues < MaxRetries {
+	if numRequeues < MaxQueueRetries {
 		tc.workqueue.AddRateLimited(key)
-		klog.Infof("We will requeue %v %d times,because:%v, has retried %d times", key, MaxRetries, err, numRequeues+1)
+		klog.Infof("We will requeue %v %d times,because:%v, has retried %d times", key, MaxQueueRetries, err, numRequeues+1)
 		return
 	}
 
@@ -424,7 +425,7 @@ func (tc *TFExtensionController) deleteQueueUnitInstance(namespace, name string)
 	return nil
 }
 
-func (tc TFExtensionController) getTFJob(namespace, name string) (*tfjobv1.TFJob, error)  {
+func (tc TFExtensionController) getTFJob(namespace, name string) (*tfjobv1.TFJob, error) {
 	tfJob, err := tc.tfjobInformer.Lister().TFJobs(namespace).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -433,6 +434,22 @@ func (tc TFExtensionController) getTFJob(namespace, name string) (*tfjobv1.TFJob
 		return nil, err
 	}
 	return tfJob, nil
+}
+
+func (tc TFExtensionController) updateTFJob(namespace string, tfJob *tfjobv1.TFJob) (
+	err error, triggerOptimisticLock, triggerOtherError bool) {
+	_, err = tc.tfjobClient.KubeflowV1().TFJobs(namespace).Update(context.TODO(), tfJob, metav1.UpdateOptions{})
+	if err != nil && strings.Contains(err.Error(), OptimisticLockErrorMsg) {
+		klog.Warningf("Update annotations for tfjob %v/%v failed because of optimisticLock", namespace, tfJob.Name)
+		return err, true, false
+	}
+
+	if err != nil && !strings.Contains(err.Error(), OptimisticLockErrorMsg) {
+		klog.Errorf("Update annotations for tfjob %v/%v failed,%v", namespace, tfJob.Name, err.Error())
+		return err, false, true
+	}
+
+	return nil, false, false
 }
 
 func (tc *TFExtensionController) deleteQueueAnnotationInTFJob(qu *v1alpha1.QueueUnit) error {
@@ -451,33 +468,27 @@ func (tc *TFExtensionController) deleteQueueAnnotationInTFJob(qu *v1alpha1.Queue
 	}
 	tfJob.SetAnnotations(annotation)
 	// TODO change to patch
-	_, err = tc.tfjobClient.KubeflowV1().TFJobs(namespace).Update(context.TODO(), tfJob, metav1.UpdateOptions{})
+	err, triggerOptimisticLock, triggerOtherError := tc.updateTFJob(namespace, tfJob)
+	if triggerOtherError == true {
+		return err
+	}
 	// retry when update tfjob fails due to OptimisticLockErrorMsg
-	for retry:=0; err != nil; retry++ {
-		if !strings.Contains(err.Error(), OptimisticLockErrorMsg) {
-			klog.Errorf("Update annotations for tfjob %v/%v failed,%v", namespace, tfJobName, err.Error())
+	for retry := 0; triggerOptimisticLock == true; retry++ {
+		time.Sleep(RetryInterval)
+		tfJob, err := tc.getTFJob(namespace, tfJobName)
+		if err != nil {
+			klog.Errorf("Get tfjob %v/%v failed when retrying, %v", namespace, tfJobName, err.Error())
 			return err
-		} else {
-			time.Sleep(RetryInterval)
-			tfJob, err := tc.getTFJob(namespace, tfJobName)
-			if err != nil {
-				klog.Errorf("Get tfjob %v/%v failed when retrying, %v", namespace, tfJobName, err.Error())
-				return err
-			}
-			tfJob.SetAnnotations(annotation)
-			_, err = tc.tfjobClient.KubeflowV1().TFJobs(namespace).Update(context.TODO(), tfJob, metav1.UpdateOptions{})
-			if err !=nil && strings.Contains(err.Error(), OptimisticLockErrorMsg) {
-				klog.Warningf("Update annotations for tfjob %v/%v failed because of optimisticLock ,retried %d times",
-					namespace, tfJobName, retry + 1)
-			}
-			if err !=nil && !strings.Contains(err.Error(), OptimisticLockErrorMsg) {
-				klog.Errorf("Update annotations for tfjob %v/%v failed,%v", namespace, tfJobName, err.Error())
-				return err
-			}
-			if retry > MaxRetries {
-				klog.Errorf("update tfjob %v/%v error after retried: %v", namespace, tfJobName, err.Error())
-				return err
-			}
+		}
+		tfJob.SetAnnotations(annotation)
+		err, triggerOptimisticLock, triggerOtherError = tc.updateTFJob(namespace, tfJob)
+		if triggerOtherError == true {
+			return err
+		}
+		if retry > MaxUpdateRetries {
+			klog.Errorf("After maximum %v retries, it still fails to update tfjob %v/%v : error: %v",
+				MaxUpdateRetries, namespace, tfJobName, err.Error())
+			return err
 		}
 	}
 
