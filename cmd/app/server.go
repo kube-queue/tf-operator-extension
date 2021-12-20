@@ -11,7 +11,7 @@ import (
 	queueversioned "github.com/kube-queue/api/pkg/client/clientset/versioned"
 	queueinformers "github.com/kube-queue/api/pkg/client/informers/externalversions"
 	"github.com/kube-queue/tf-operator-extension/cmd/app/options"
-	"github.com/kube-queue/tf-operator-extension/pkg/contorller"
+	"github.com/kube-queue/tf-operator-extension/pkg/controller"
 	tfjobv1 "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/apis/tensorflow/v1"
 	tfjobversioned "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/clientset/versioned"
 	tfjobinformers "github.com/kube-queue/tf-operator-extension/pkg/tf-operator/client/informers/externalversions"
@@ -51,7 +51,7 @@ func Run(opt *options.ServerOption) error {
 	tfJobInformerFactory := tfjobinformers.NewSharedInformerFactory(tfJobClient, 0)
 	tfJobInformer := tfJobInformerFactory.Kubeflow().V1().TFJobs().Informer()
 
-	tfExtensionController := contorller.NewTFExtensionController(
+	tfExtensionController := controller.NewTFExtensionController(
 		k8sClientSet,
 		queueInformerFactory.Scheduling().V1alpha1().QueueUnits(),
 		queueClient,
@@ -64,8 +64,8 @@ func Run(opt *options.ServerOption) error {
 				switch qu := obj.(type) {
 				case *v1alpha1.QueueUnit:
 					if qu.Spec.ConsumerRef != nil &&
-						qu.Spec.ConsumerRef.Kind == contorller.ConsumerRefKind &&
-						qu.Spec.ConsumerRef.APIVersion == contorller.ConsumerRefAPIVersion {
+						qu.Spec.ConsumerRef.Kind == controller.ConsumerRefKind &&
+						qu.Spec.ConsumerRef.APIVersion == controller.ConsumerRefAPIVersion {
 						return true
 					}
 					return false
