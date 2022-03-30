@@ -153,8 +153,8 @@ func (tc *TFExtensionController) syncHandler(key string) error {
 	if queueUnit.Status.Phase == v1alpha1.Dequeued {
 		klog.Infof("QueueUnit %v/%v has dequeued", queueUnit.Namespace, queueUnit.Name)
 		err = tc.deleteQueueAnnotationInTFJob(queueUnit)
-		if errors.IsNotFound(err) {
-			// If can't find tfjob for queueunit, return err, handleErr function will requeue key MaxRetries times
+		if err != nil {
+			// return err, handleErr function will requeue key MaxRetries times
 			return err
 		}
 	}
