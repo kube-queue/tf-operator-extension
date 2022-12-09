@@ -235,6 +235,10 @@ func (tc *TFExtensionController) AddTFJob(obj interface{}) {
 		klog.Errorf("Can't create queueunit for tfjob %v/%v,err is:%v", tfJob.Namespace, tfJob.Name, err)
 	}
 
+	if tfJob.Status.ReplicaStatuses == nil {
+		tfJob.Status.ReplicaStatuses = map[commonv1.ReplicaType]*commonv1.ReplicaStatus{}
+	}
+
 	if tfJob.Status.Conditions == nil {
 		tfJob.Status.Conditions = make([]commonv1.JobCondition, 0)
 		tfJob.Status.Conditions = append(tfJob.Status.Conditions, commonv1.JobCondition{
